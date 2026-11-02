@@ -1,0 +1,3 @@
+setup_ws/venv/
+classification/dataset/
+classification/modele_bonbons.pth
