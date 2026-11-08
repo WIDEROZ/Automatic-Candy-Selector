@@ -95,7 +95,7 @@ val_loader = DataLoader(
 
 model = torch.hub.load(
     "pytorch/vision:v0.10.0",
-    "resnet50",
+    "resnet152",
     pretrained=True
 )
 

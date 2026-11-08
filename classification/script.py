@@ -24,7 +24,7 @@ checkpoint = torch.load(
 categories = checkpoint["classes"]
 
 # Construire ResNet18 sans télécharger de poids
-model = models.resnet50(weights=None)
+model = models.resnet152(weights=None)
 
 # Adapter la dernière couche au nombre de classes
 num_features = model.fc.in_features
@@ -47,7 +47,7 @@ print("Classes :", categories)
 # 3. Charger et prétraiter l'image
 # ==========================================
 
-image_path = "images/7.jpg"
+image_path = "image/4.jpg"
 
 input_image = Image.open(image_path).convert("RGB")
 
