@@ -5,13 +5,18 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 
+from HierarchicalCandyDataset import HierarchicalCandyDataset
+from HierarchicalResNet import HierarchicalResNet
+
+
+
 
 # ==========================================
 # 1. Configuration
 # ==========================================
 
 BATCH_SIZE = 16
-EPOCHS = 2
+EPOCHS = 5
 LEARNING_RATE = 0.001
 
 device = torch.device(
@@ -51,27 +56,26 @@ val_transform = transforms.Compose([
 # 3. Chargement du dataset
 # ==========================================
 
-train_dataset = datasets.ImageFolder(
+
+train_dataset = HierarchicalCandyDataset(
     "dataset/train",
     transform=train_transform
 )
 
-val_dataset = datasets.ImageFolder(
+val_dataset = HierarchicalCandyDataset(
     "dataset/val",
     transform=val_transform
 )
 
-# Vérifier que les catégories correspondent
-assert train_dataset.classes == val_dataset.classes, (
-    "Les catégories de train et val sont différentes."
-)
+# Vérification de la cohérence des labels
+assert train_dataset.categories == val_dataset.categories
+assert train_dataset.colors == val_dataset.colors
 
-num_classes = len(train_dataset.classes)
+num_categories = len(train_dataset.categories)
+num_colors = len(train_dataset.colors)
 
-print("Catégories :", train_dataset.classes)
-print("Nombre de classes :", num_classes)
-print("Images d'entraînement :", len(train_dataset))
-print("Images de validation :", len(val_dataset))
+print("Catégories :", train_dataset.categories)
+print("Couleurs :", train_dataset.colors)
 
 
 train_loader = DataLoader(
@@ -88,130 +92,130 @@ val_loader = DataLoader(
     num_workers=0
 )
 
+# ================================================================
+# 4. Chargement du modèle et définition des couches de sortie
+# ================================================================
 
-# ==========================================
-# 4. Chargement du modèle pré-entraîné
-# ==========================================
 
+# Chargement de ResNet50
 model = torch.hub.load(
     "pytorch/vision:v0.10.0",
-    "resnet152",
+    "resnet50",
     pretrained=True
 )
 
-# Geler toutes les anciennes couches
+
+
+# Gel des couches pré-entraînées
 for param in model.parameters():
     param.requires_grad = False
 
-# Remplacer la dernière couche par num_classes sorties
 num_features = model.fc.in_features
 
-model.fc = nn.Linear(
+# Deux têtes de classification
+model.fc = nn.Identity()
+
+model.category_classifier = nn.Linear(
     num_features,
-    num_classes
+    num_categories
 )
 
-model = model.to(device)
+model.color_classifier = nn.Linear(
+    num_features,
+    num_colors
+)
+
+model = HierarchicalResNet(
+    num_categories,
+    num_colors
+).to(device)
+
 
 
 # ==========================================
 # 5. Fonction de perte et optimiseur
 # ==========================================
 
-criterion = nn.CrossEntropyLoss()
+
+
+criterion_category = nn.CrossEntropyLoss()
+criterion_color = nn.CrossEntropyLoss()
 
 optimizer = optim.Adam(
-    model.fc.parameters(),
+    list(model.category_classifier.parameters()) +
+    list(model.color_classifier.parameters()),
     lr=LEARNING_RATE
 )
-
 
 # ==========================================
 # 6. Boucle d'entraînement
 # ==========================================
 
+
 for epoch in range(EPOCHS):
 
     model.train()
 
-    model.eval()
-    model.fc.train()
+    # Garder le backbone gelé en mode évaluation
+    model.backbone.eval()
 
     running_loss = 0.0
-    correct = 0
+
+    category_correct = 0
+    color_correct = 0
     total = 0
 
-    for images, labels in train_loader:
+    for images, category_labels, color_labels in train_loader:
 
         images = images.to(device)
-        labels = labels.to(device)
+        category_labels = category_labels.to(device)
+        color_labels = color_labels.to(device)
 
-        # Remise à zéro des gradients
         optimizer.zero_grad()
 
-        # Prédiction
-        outputs = model(images)
+        # Deux prédictions
+        category_outputs, color_outputs = model(images)
 
-        # Calcul de l'erreur
-        loss = criterion(outputs, labels)
+        # Deux fonctions de perte
+        loss_category = criterion_category(
+            category_outputs, category_labels
+        )
 
-        # Calcul des gradients
+        loss_color = criterion_color(
+            color_outputs, color_labels
+        )
+
+        # Perte totale
+        loss = loss_category + loss_color
+
         loss.backward()
-
-        # Mise à jour de la dernière couche
         optimizer.step()
 
         running_loss += loss.item() * images.size(0)
 
-        predictions = outputs.argmax(dim=1)
+        category_predictions = category_outputs.argmax(dim=1)
+        color_predictions = color_outputs.argmax(dim=1)
 
-        correct += (predictions == labels).sum().item()
-        total += labels.size(0)
+        category_correct += (
+            category_predictions == category_labels
+        ).sum().item()
+
+        color_correct += (
+            color_predictions == color_labels
+        ).sum().item()
+
+        total += images.size(0)
 
     train_loss = running_loss / total
-    train_accuracy = 100 * correct / total
 
-
-
-
-    # 7. Validation
-
-    model.eval()
-
-    val_correct = 0
-    val_total = 0
-    val_loss_sum = 0.0
-
-    with torch.no_grad():
-
-        for images, labels in val_loader:
-
-            images = images.to(device)
-            labels = labels.to(device)
-
-            outputs = model(images)
-
-            loss = criterion(outputs, labels)
-
-            val_loss_sum += loss.item() * images.size(0)
-
-            predictions = outputs.argmax(dim=1)
-
-            val_correct += (
-                predictions == labels
-            ).sum().item()
-
-            val_total += labels.size(0)
-
-    val_loss = val_loss_sum / val_total
-    val_accuracy = 100 * val_correct / val_total
+    category_accuracy = 100 * category_correct / total
+    color_accuracy = 100 * color_correct / total
 
     print(
-        f"Epoch [{epoch + 1}/{EPOCHS}] "
-        f"Train Loss: {train_loss:.4f} "
-        f"Train Acc: {train_accuracy:.2f}% "
-        f"Val Loss: {val_loss:.4f} "
-        f"Val Acc: {val_accuracy:.2f}%"
+        f"Epoch [{epoch+1}/{EPOCHS}] "
+        f"Loss: {train_loss:.4f} "
+        f"Category Acc: {category_accuracy:.2f}% "
+        f"Color Acc: {color_accuracy:.2f}%"
     )
 
 
@@ -221,7 +225,8 @@ for epoch in range(EPOCHS):
 torch.save(
     {
         "model_state_dict": model.state_dict(),
-        "classes": train_dataset.classes
+        "categories": train_dataset.categories,
+        "colors": train_dataset.colors
     },
     "modele_bonbons.pth"
 )
